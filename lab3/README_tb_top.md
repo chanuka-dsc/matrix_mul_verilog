@@ -17,7 +17,9 @@ The script runs the 4 steps **3 times back-to-back without reset** (`randc` → 
 Matrix size: `localparam int DIM_LOG` at the top (2 = 4x4 for debugging, 6 = 64x64 for the final run).
 
 ## Still to do
-- STEP 5 – concurrent assertions on the output AXI-Stream (Chanuka).
+- ~~STEP 5 – concurrent assertions on the output AXI-Stream~~ **done (Chanuka)** – `p_hold`, `p_stable`,
+  `p_last`, `p_nox` on `m00_axis_*`. Silent on the current design; `p_last` fires at 2550 ns on the old
+  late-`tlast` design (commit `c5d8248`), which proves the assertions really catch protocol bugs.
 - ~~STEP 6 – FSM coverage~~ **done (Dipu)** – see `README_fsm.md`; run it with `run_tb.tcl`.
 
 ## Vivado project setup (important)

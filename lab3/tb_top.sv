@@ -194,11 +194,37 @@ module tb_top;
     //   a_name: assert property (p_name) else $error("p_name failed at %0t", $time);
     //
     // TODO 5a: a word is held until it is accepted:     tvalid && !tready |=> tvalid
+    property p_hold;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tvalid && !m00_axis_tready |=> m00_axis_tvalid;
+    endproperty
+    
+    a_hold: assert property (p_hold) else $error("p_hold failed at %0t", $time);
+    
     // TODO 5b: the word does not change while stalled:  tvalid && !tready |=> $stable(tdata) && $stable(tlast)
+   property p_stable;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tvalid && !m00_axis_tready |=> $stable(m00_axis_tdata) && $stable(m00_axis_tlast) ;
+    endproperty
+    
+    a_stable: assert property (p_stable) else $error("p_stable failed at %0t", $time);
+    
+    
     // TODO 5c: tlast only together with a valid word:   tlast |-> tvalid
+    property p_last;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tlast |-> m00_axis_tvalid;
+    endproperty
+    
+     a_last: assert property (p_last) else $error("p_last failed at %0t", $time);
     // TODO 5d: no unknown data on the bus:              tvalid |-> !$isunknown(tdata)
     //   (all four use the m00_axis_* signals)
-
+    property p_nox;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tvalid |-> !$isunknown(m00_axis_tdata);
+    endproperty
+    
+     a_nox: assert property (p_nox) else $error("p_nox failed at %0t", $time);
 
     // ------------------------------------------------------------------
     // STEP 6: FSM transition coverage (Lab 3 task 5)
