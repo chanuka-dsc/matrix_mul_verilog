@@ -10,7 +10,7 @@
 module mat_mul_tb # 
     (
         parameter integer DATA_WIDTH = 32,        
-        parameter integer MATRIX_DIMENSION_LOG_2 = 2 // for debug use a smaller size
+        parameter integer MATRIX_DIMENSION_LOG_2 = 6 // for debug use a smaller size
     )
     (
 
@@ -112,7 +112,7 @@ module mat_mul_tb #
                     
                     // set the last signal when sending the last data item
                     if (row == 2**MATRIX_DIMENSION_LOG_2 - 1 && column == 2**MATRIX_DIMENSION_LOG_2 - 1)
-                        s00_axis_tlast = 1;
+                        s00_axis_tlast <= 1;
                     #20;
                     
                     // wait until the slave is ready to read the data
@@ -122,9 +122,9 @@ module mat_mul_tb #
                 end
             end
             
-            s00_axis_tlast = 0;
-            s00_axis_tvalid = 0;
-            
+            s00_axis_tlast <= 0;
+            s00_axis_tvalid <= 0;
+
             // send the other matrix
             sel = 1;
         end

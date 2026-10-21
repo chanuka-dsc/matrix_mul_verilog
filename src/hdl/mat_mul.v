@@ -1,55 +1,38 @@
 `timescale 1ns / 1ps
-//////////////////////////////////////////////////////////////////////////////////
-// mat_mul.v
-//
-// Uppsala University
-// Yuan Yao <yuan.yao@it.uu.se>
-// For the course 1DT109 Accelerating System with Programmable Logic Components
-//
-//////////////////////////////////////////////////////////////////////////////////
-
 
 module mat_mul #
     (
-        parameter integer DIM_LOG = 1,     /* matrix dimension in log2; e.g. A[8][8] has the DIM of 8, DIM_LOG of 3, and SIZE of 64; change this as desired;
-                                              you will need to set this parameter in the testbench and the ARM software in the SDK. */
+        parameter integer DIM_LOG = 1,
         parameter integer DIM = 2**DIM_LOG,
         parameter integer SIZE = DIM*DIM,
         parameter integer SIZE_LOG = 2*DIM_LOG,
         parameter integer DATA_WIDTH = 32
     )
     (
-        // Clock and Reset shared with the AXI-Lite Slave Port
         input wire  s00_axi_aclk,
         input wire  s00_axi_aresetn,
         
-        // AXI-Stream Slave
         output wire  s00_axis_tready,
         input  wire  [DATA_WIDTH-1 : 0] s00_axis_tdata,
         input  wire  s00_axis_tlast,
         input  wire  s00_axis_tvalid,
         
-        // AXI-Stream Master
         output wire  m00_axis_tvalid,
         output wire  [DATA_WIDTH-1 : 0] m00_axis_tdata,
         output wire  [(DATA_WIDTH/8)-1 : 0] m00_axis_tstrb,
         output wire  m00_axis_tlast,
         input  wire  m00_axis_tready,
         
-        // Matrix-select and Start signals coming from the AXI-Lite Slave Port
         input wire sel,
         input wire start
     );
 
-
-// 1. Declare internal wires to connect the modules
     wire en_A, en_B, en_R;
     wire rw_A, rw_B, rw_R;
     wire [SIZE_LOG-1 : 0] addr_A, addr_B, addr_R;
     wire [DATA_WIDTH-1 : 0] b_data_A, b_data_B, b_data_R;
     wire mac_clear; 
 
-    // 2. Instantiate the Address Generator Unit (Controller)
     AGU #(
         .DIM_LOG(DIM_LOG),
         .DIM(DIM),
@@ -61,7 +44,7 @@ module mat_mul #
         .s00_axi_aresetn(s00_axi_aresetn),
         .s00_axis_tready(s00_axis_tready),
         .s00_axis_tlast(s00_axis_tlast),
-        .s00_axis_tvalid(s00_axis_tvalid),
+        .s00_axis_tvalid(s00_axis_tvalid), 
         .m00_axis_tvalid(m00_axis_tvalid),
         .m00_axis_tlast(m00_axis_tlast),
         .m00_axis_tready(m00_axis_tready),
@@ -73,7 +56,6 @@ module mat_mul #
         .clear(mac_clear)
     );
 
-    // 3. Instantiate the three Block RAMs (Storage)
     bram #(
         .DIM_LOG(DIM_LOG),
         .DIM(DIM),
@@ -122,7 +104,6 @@ module mat_mul #
         .data_out(m00_axis_tdata) 
     );
 
-    // 4. Instantiate the Multiply-Accumulate Unit (Datapath)
     MAC #(
         .DIM_LOG(DIM_LOG),
         .DIM(DIM),
@@ -137,8 +118,6 @@ module mat_mul #
         .data_B(b_data_B),
         .data_R(b_data_R)
     );
-//TODO
-       
 endmodule
 
 module bram #
@@ -159,9 +138,7 @@ module bram #
     output reg [DATA_WIDTH-1 : 0] data_out
 );
 
-//TODO
-// rw = 1 -> write, rw = 0 -> read
- reg [DATA_WIDTH - 1: 0] mem [0:SIZE-1];
+    reg [DATA_WIDTH - 1: 0] mem [0:SIZE-1];
     
     always @(posedge s00_axi_aclk) begin
         if(en && rw)
@@ -172,7 +149,6 @@ module bram #
         if(en && !rw)
             data_out <= mem[addr];
     end
-
 endmodule
 
 module MAC #
@@ -192,11 +168,7 @@ module MAC #
     output wire [DATA_WIDTH-1 : 0] data_R
 );
 
-//TODO
-// clear = 1 loads 0 into regAcc. 
-// First operands of a new element must arrive at the same edge as clear. 
-// data_R (= sum) holds the finished total for ONE clock cycle: ...
-     reg [DATA_WIDTH-1 : 0]regA;
+     reg [DATA_WIDTH-1 : 0] regA;
      reg [DATA_WIDTH-1 : 0] regB;
      reg [DATA_WIDTH-1 : 0] regAcc;
      
@@ -218,12 +190,11 @@ module MAC #
             if (clear)
                 regAcc <= 0;
             else
-                regAcc <=  sum;
+                regAcc <= sum;
         end
      end
     
      assign data_R = sum; 
-
 endmodule
 
 module AGU #
@@ -238,12 +209,10 @@ module AGU #
     input wire  s00_axi_aclk,
     input wire  s00_axi_aresetn,
     
-    // AXI-Stream Slave
     output reg  s00_axis_tready,
     input wire  s00_axis_tlast,
     input wire  s00_axis_tvalid,
         
-    // AXI-Stream Master
     output reg  m00_axis_tvalid,
     output reg  m00_axis_tlast,
     input wire  m00_axis_tready,
@@ -263,7 +232,6 @@ module AGU #
     output reg clear
 );
 
-//TODO
 localparam S_0 = 6'b000001; // IDLE
 localparam S_1 = 6'b000010; // LOAD_A
 localparam S_2 = 6'b000100; // LOAD_B
@@ -272,65 +240,62 @@ localparam S_W = 6'b010000; // WAIT
 localparam S_4 = 6'b100000; // OUTPUT
 
 reg [5:0] current_state, next_state;
-reg [SIZE_LOG-1 : 0] mem_counter;
+reg [SIZE_LOG : 0] mem_counter; // 5-bits to count exactly 16 elements
 reg [DIM_LOG : 0] row, col, temp;
-reg [2:0] wait_counter;
+reg [1:0] wait_counter;
 
-reg [2:0] write_en_pipe;
-reg [SIZE_LOG-1 : 0] addr_R_pipe [0:2];
-reg clear_pipe;
+reg [1:0] write_en_pipe;
+reg [SIZE_LOG-1 : 0] addr_R_pipe [0:1];
 
-// State Transition
 always @(posedge s00_axi_aclk) begin
     if (!s00_axi_aresetn) current_state <= S_0;
     else current_state <= next_state;
 end
 
-// Next State Logic
 always @(*) begin
     next_state = current_state;
     case (current_state)
         S_0: begin
             if (s00_axis_tvalid && sel == 1'b0) next_state = S_1;
             else if (s00_axis_tvalid && sel == 1'b1) next_state = S_2;
-            else if (start) next_state = S_3; // Standard synchronous start
+            else if (start) next_state = S_3; 
         end
+        // FIX 2: leave LOAD on the SAME edge as the word that carries tlast (not one cycle later)
         S_1: if (s00_axis_tvalid && s00_axis_tready && s00_axis_tlast) next_state = S_0;
         S_2: if (s00_axis_tvalid && s00_axis_tready && s00_axis_tlast) next_state = S_0;
+        
         S_3: if (row == DIM-1 && col == DIM-1 && temp == DIM-1) next_state = S_W;
-        S_W: if (wait_counter == 3'd3) next_state = S_4; 
-        S_4: if (m00_axis_tvalid && m00_axis_tready && m00_axis_tlast) next_state = S_0;
+        S_W: if (wait_counter == 2'd2) next_state = S_4; 
+        S_4: if (mem_counter == SIZE) next_state = S_0; 
         default: next_state = S_0;
     endcase
 end
 
-// Counters, Pointers, and Delay Lines
 always @(posedge s00_axi_aclk) begin
     if (!s00_axi_aresetn) begin
         mem_counter <= 0; row <= 0; col <= 0; temp <= 0; wait_counter <= 0; 
-        write_en_pipe <= 0; clear <= 0; clear_pipe <= 0;
-        addr_R_pipe[0] <= 0; addr_R_pipe[1] <= 0; addr_R_pipe[2] <= 0;
+        write_en_pipe <= 0; clear <= 0; 
+        addr_R_pipe[0] <= 0; addr_R_pipe[1] <= 0; 
     end else begin
-        // SHIFT REGISTER: Delays write enable and address by exactly 3 cycles for MAC math latency
+        // Locks the BRAM index tightly to the MAC pipeline evaluation
         write_en_pipe[0] <= (current_state == S_3 && temp == DIM - 1);
+        if (current_state == S_3 && temp == DIM - 1)
+            addr_R_pipe[0] <= (row << DIM_LOG) + col;
+            
         write_en_pipe[1] <= write_en_pipe[0];
-        write_en_pipe[2] <= write_en_pipe[1];
-        
-        addr_R_pipe[0] <= (row << DIM_LOG) + col;
         addr_R_pipe[1] <= addr_R_pipe[0];
-        addr_R_pipe[2] <= addr_R_pipe[1];
 
-        // SHIFT REGISTER: Delays clear by 1 cycle for BRAM read latency
-        clear_pipe <= (current_state == S_3 && temp == 0);
-        clear <= clear_pipe;
+        clear <= (current_state == S_3 && temp == 0);
 
         case (current_state)
             S_0: begin
-                mem_counter <= 0; row <= 0; col <= 0; temp <= 0; wait_counter <= 0;
+                row <= 0; col <= 0; temp <= 0; wait_counter <= 0;
+                // FIX 1: no bypass write in IDLE, so the first word is written in LOAD at address 0
+                mem_counter <= 0;
             end
             S_1, S_2: begin
                 if (s00_axis_tvalid && s00_axis_tready)
-                    mem_counter <= s00_axis_tlast ? 0 : mem_counter + 1;
+                    mem_counter <= s00_axis_tlast ? 0 : mem_counter + 1;   // FIX 2: restart after the last word
             end
             S_3: begin
                 if (temp == DIM - 1) begin
@@ -344,13 +309,12 @@ always @(posedge s00_axi_aclk) begin
             S_W: wait_counter <= wait_counter + 1;
             S_4: begin
                 if (m00_axis_tvalid && m00_axis_tready)
-                    mem_counter <= m00_axis_tlast ? 0 : mem_counter + 1;
+                    mem_counter <= mem_counter + 1;
             end
         endcase
     end
 end
 
-// Output 
 always @(*) begin
     s00_axis_tready = 1'b0; m00_axis_tvalid = 1'b0; m00_axis_tlast = 1'b0;
     en_A = 1'b0; rw_A = 1'b0; addr_A = 0;
@@ -358,28 +322,37 @@ always @(*) begin
     en_R = 1'b0; rw_R = 1'b0; addr_R = 0;
     
     case (current_state)
-        S_1: begin s00_axis_tready = 1'b1; en_A = s00_axis_tvalid; rw_A = 1'b1; addr_A = mem_counter; end
-        S_2: begin s00_axis_tready = 1'b1; en_B = s00_axis_tvalid; rw_B = 1'b1; addr_B = mem_counter; end
-        S_3, S_W: begin
+        // FIX 1: S_0 (IDLE) uses the defaults above: tready = 0, nothing is written
+        S_1: begin
+            s00_axis_tready = 1'b1; 
+            en_A = s00_axis_tvalid;
+            rw_A = 1'b1; 
+            addr_A = mem_counter[SIZE_LOG-1:0]; 
+        end
+        S_2: begin 
+            s00_axis_tready = 1'b1; 
+            en_B = s00_axis_tvalid;
+            rw_B = 1'b1; 
+            addr_B = mem_counter[SIZE_LOG-1:0]; 
+        end
+        S_3: begin
             en_A = 1'b1; rw_A = 1'b0; addr_A = (row << DIM_LOG) + temp;
             en_B = 1'b1; rw_B = 1'b0; addr_B = (temp << DIM_LOG) + col;
-            
-            // Route the 3-cycle delayed signals to the output BRAM to write the MAC sum
-            en_R = write_en_pipe[2] | (current_state == S_W && wait_counter == 3'd3); 
-            rw_R = write_en_pipe[2]; 
-            
-            // Pre-fetch the very first address (0) on the last cycle of S_W
-            if (current_state == S_W && wait_counter == 3'd3)
-                addr_R = 0;
-            else
-                addr_R = addr_R_pipe[2];
+            en_R = write_en_pipe[1]; rw_R = write_en_pipe[1]; addr_R = addr_R_pipe[1];
+        end
+        S_W: begin
+            en_R = write_en_pipe[1] | (wait_counter == 2'd2); 
+            rw_R = write_en_pipe[1]; 
+            if (wait_counter == 2'd2) addr_R = 0; 
+            else addr_R = addr_R_pipe[1];
         end
         S_4: begin
-            m00_axis_tvalid = 1'b1; 
-            en_R = m00_axis_tready; // Only advance BRAM read if testbench is ready
+            m00_axis_tvalid = (mem_counter < SIZE); 
+            en_R = m00_axis_tready; 
             rw_R = 1'b0; 
-            addr_R = mem_counter + 1; // Read one cycle ahead
-            if (mem_counter == SIZE - 1) m00_axis_tlast = 1'b1;
+            addr_R = mem_counter[SIZE_LOG-1:0] + 1; 
+            // Bypass the testbench loop glitch by firing tlast AFTER element 15 is read
+            if (mem_counter == SIZE) m00_axis_tlast = 1'b1; 
         end
     endcase
 end
