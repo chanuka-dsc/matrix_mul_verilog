@@ -13,3 +13,6 @@ __MACOSX/
 .DS_Store
 *.pdf
 *.zip
+
+# Lab 3 stand-alone simulation output
+lab3/sim_run/
