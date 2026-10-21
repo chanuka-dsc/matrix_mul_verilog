@@ -1,12 +1,13 @@
 `timescale 1ns / 1ps
 //////////////////////////////////////////////////////////////////////////////////
-// tb_top.sv  --  Lab 3, Person B (Chanuka): interface, assertions, coverage
+// tb_top.sv  --  Lab 3: object-oriented testbench for the matrix multiplier
 //
-// Works together with Dipon's stimulus.sv (class `stimulus`, see TEAM_PLAN.md).
-// Until that file is ready, the project uses stimulus_standin.sv instead.
+// Person B (Chanuka): class tb, AXI-Stream send/receive, concurrent assertions
+// Person A (Dipon):   stimulus.sv (random matrices, reference model, check)
+//                     and the FSM coverage in this file
 //
-// THE ONE TIMING RULE (the Lab 2 lesson):
-//   change DUT inputs only like this:   @(posedge clk);  sig <= value;
+// Timing rule used everywhere (the Lab 2 lesson):
+//   DUT inputs only change like this:   @(posedge clk);  sig <= value;
 //   -> the new value lands just AFTER the edge, so the DUT sees it at the NEXT edge.
 //   A word is transferred on an edge where valid && ready were both 1.
 //////////////////////////////////////////////////////////////////////////////////
@@ -16,12 +17,12 @@ module tb_top;
     // ------------------------------------------------------------------
     // Parameters
     // ------------------------------------------------------------------
-    localparam int DIM_LOG = 2;              // 4x4 while debugging, 6 (64x64) for the final run
-    localparam int DIM     = 2**DIM_LOG;
-    localparam int SIZE    = DIM*DIM;
-    localparam int DATA_WIDTH    = 32;
-    
-    // AGU state codes (copied from mat_mul.v, module AGU) - used by the coverage in STEP 6
+    localparam int DIM_LOG    = 2;           // 2 = 4x4 for debugging, 6 = 64x64 for the final run
+    localparam int DIM        = 2**DIM_LOG;
+    localparam int SIZE       = DIM*DIM;
+    localparam int DATA_WIDTH = 32;
+
+    // AGU state codes (copied from mat_mul.v, module AGU), used by the FSM coverage
     localparam logic [5:0] S_IDLE   = 6'b000001,
                            S_LOAD_A = 6'b000010,
                            S_LOAD_B = 6'b000100,
@@ -30,152 +31,135 @@ module tb_top;
                            S_OUT    = 6'b100000;
 
     // ------------------------------------------------------------------
-    // STEP 1: signals, clock, DUT
+    // Signals, clock and DUT
     // ------------------------------------------------------------------
-    // TODO 1a: one `logic` for every port of mat_mul. Use the SAME names as the ports.
-    logic s00_axi_aclk;
-    logic s00_axi_aresetn;
-    logic s00_axis_tready;                            
-    logic [DATA_WIDTH-1:0] s00_axis_tdata;
-    logic s00_axis_tlast;
-    logic s00_axis_tvalid;
-    logic m00_axis_tvalid;
-    logic [DATA_WIDTH-1 : 0] m00_axis_tdata;
-    logic [(DATA_WIDTH/8)-1 : 0] m00_axis_tstrb;
-    logic m00_axis_tlast;
-    logic  m00_axis_tready;
-    logic sel;
-    logic start;
-//   Ports: s00_axi_aclk, s00_axi_aresetn,
-    //          s00_axis_tready, s00_axis_tdata [31:0], s00_axis_tlast, s00_axis_tvalid,
-    //          m00_axis_tvalid, m00_axis_tdata [31:0], m00_axis_tstrb [3:0], m00_axis_tlast, m00_axis_tready,
-    //          sel, start
+    // One signal per port of mat_mul, with the same names as the ports.
+    // s00_axis_* = the DUT's input stream  (the testbench is the sender)
+    // m00_axis_* = the DUT's output stream (the testbench is the receiver)
+    logic                        s00_axi_aclk;
+    logic                        s00_axi_aresetn;
+    logic                        s00_axis_tready;
+    logic [DATA_WIDTH-1:0]       s00_axis_tdata;
+    logic                        s00_axis_tlast;
+    logic                        s00_axis_tvalid;
+    logic                        m00_axis_tvalid;
+    logic [DATA_WIDTH-1:0]       m00_axis_tdata;
+    logic [(DATA_WIDTH/8)-1:0]   m00_axis_tstrb;
+    logic                        m00_axis_tlast;
+    logic                        m00_axis_tready;
+    logic                        sel;
+    logic                        start;
 
-
-    // TODO 1b: a 20 ns clock (same two lines as in your Lab 2 testbenches)
+    // 20 ns clock
     initial s00_axi_aclk = 0;
     always #10 s00_axi_aclk = ~s00_axi_aclk;
 
-    // TODO 1c: the DUT. Name the instance `dut` (STEP 6 uses dut.agu_inst.current_state).
-    mat_mul # (
-    .DIM_LOG(DIM_LOG),
-    .DATA_WIDTH(DATA_WIDTH)
+    // The design under test (instance name `dut`; the FSM coverage looks at dut.agu_inst)
+    mat_mul #(
+        .DIM_LOG(DIM_LOG),
+        .DATA_WIDTH(DATA_WIDTH)
     ) dut (
-    .s00_axi_aclk(s00_axi_aclk),
-    .s00_axi_aresetn(s00_axi_aresetn),
-    .s00_axis_tready(s00_axis_tready),
-    .s00_axis_tdata(s00_axis_tdata),
-    .s00_axis_tlast(s00_axis_tlast),
-    .s00_axis_tvalid(s00_axis_tvalid),
-    .m00_axis_tvalid(m00_axis_tvalid),
-    .m00_axis_tdata(m00_axis_tdata),
-    .m00_axis_tstrb(m00_axis_tstrb),
-    .m00_axis_tlast(m00_axis_tlast),
-    .m00_axis_tready(m00_axis_tready),
-    .sel(sel),
-    .start(start)
+        .s00_axi_aclk(s00_axi_aclk),
+        .s00_axi_aresetn(s00_axi_aresetn),
+        .s00_axis_tready(s00_axis_tready),
+        .s00_axis_tdata(s00_axis_tdata),
+        .s00_axis_tlast(s00_axis_tlast),
+        .s00_axis_tvalid(s00_axis_tvalid),
+        .m00_axis_tvalid(m00_axis_tvalid),
+        .m00_axis_tdata(m00_axis_tdata),
+        .m00_axis_tstrb(m00_axis_tstrb),
+        .m00_axis_tlast(m00_axis_tlast),
+        .m00_axis_tready(m00_axis_tready),
+        .sel(sel),
+        .start(start)
     );
 
-
     // ------------------------------------------------------------------
-    // STEP 2-4: class tb  (the four steps of the Lab 2 testbench as members)
+    // class tb: the four steps of the Lab 2 testbench as class members
+    // (Lab 3 tasks 1 and 2)
     // ------------------------------------------------------------------
     class tb;
-        stimulus   stim;          // Dipon's object: A, B, R_expected, compute_ref(), check()
-        logic [31:0] R_hw[];        // the result words we receive from the DUT
-        int        errors;
+        stimulus     stim;        // Dipon's object: A, B, R_expected, compute_ref(), check()
+        logic [31:0] R_hw[];      // the result words received from the DUT (logic: X stays visible)
+        int          errors;
 
         function new();
             stim = new(DIM);
             R_hw = new[SIZE];
         endfunction
 
-        // ---- Lab 3 step 1: matrix initialization ----
+        // ---- Step 1: matrix initialization ----
+        // New random A and B (constraint mode chosen by randc). The immediate
+        // assertion stops the simulation if the constraints cannot be solved.
         function void init();
-            // TODO 2a: randomize stim; if it fails, stop the simulation.
-            //   Immediate assertion form (lecture Verification II, slide 12):
-            //   assert (<something that must be true>) else $fatal(1, "message");
-            //   Then call stim.display() so you can see what was generated.
-            
-            assert( stim.randomize()) else $fatal (1, "generating random number failed !!!");
+            assert (stim.randomize()) else $fatal(1, "generating random number failed !!!");
         endfunction
 
-        // ---- Lab 3 step 2: reference result ----
+        // ---- Step 2: reference result ----
+        // Dipon's software model computes R_expected = A x B, then A, B and R are printed.
         function void compute();
-            // TODO 2b: one line - let Dipon's class compute R_expected.
             stim.compute_ref();
-            stim.display();        // print A, B and the expected R (after compute_ref, so R is filled)
+            stim.display();        // print after compute_ref, so R is filled
         endfunction
 
-        // ---- Lab 3 step 3: feed the matrices to the DUT ----
-        // Sends ONE word with the AXI-Stream handshake and returns after it was accepted.
+        // ---- Step 3: feed the matrices to the DUT ----
+        // Sends ONE word with the AXI-Stream handshake: put the word on the bus
+        // (tdata, tvalid = 1, tlast), then wait edge by edge until the DUT had
+        // tready = 1 at an edge - that is the edge where the word was taken.
+        // Reading tready right at the edge gives its value just BEFORE the edge,
+        // i.e. exactly what the DUT used for the handshake.
         task send_word(bit [31:0] data, bit last);
-            // TODO 3a:
-            //   1. put the word on the bus with '<=' : tdata, tvalid = 1, tlast = last
-            //   2. wait for clock edges until the DUT had tready = 1 at an edge.
-            //      Pattern:   do @(posedge clk); while (!s00_axis_tready);
-            //      (reading tready right at the edge gives the value it had JUST BEFORE
-            //       the edge, i.e. exactly what the DUT used for the handshake)
             s00_axis_tvalid <= 1;
-            s00_axis_tdata <= data;
-            s00_axis_tlast <= last;
+            s00_axis_tdata  <= data;
+            s00_axis_tlast  <= last;
             do @(posedge s00_axi_aclk);
-            while(!s00_axis_tready);
-
+            while (!s00_axis_tready);
         endtask
 
+        // Sends matrix A (sel = 0), then matrix B (sel = 1), tlast on the last word
+        // of each. Two idle edges in between: the DUT goes back to IDLE after A.
         task send();
-            // TODO 3b:
-            //   - start aligned to the clock:  @(posedge clk);
-            //   - sel <= 0, then send every element of stim.A with send_word (last=1 on the last one)
-            //   - after the last word: tvalid <= 0, tlast <= 0
-            //   - same for stim.B with sel <= 1
-            //   Loop example:  foreach (stim.A[i]) send_word(stim.A[i], i == SIZE-1);
-            //   Tip: put 1-2 idle clock edges between A and B (the DUT goes back to IDLE in between).
-            
             @(posedge s00_axi_aclk);
-            sel <= 0; 
-            foreach(stim.A[i])
+            sel <= 0;
+            foreach (stim.A[i])
                 send_word(stim.A[i], i == SIZE-1);
             s00_axis_tvalid <= 0;
-            s00_axis_tlast <= 0;
-            
-            repeat (2) @(posedge s00_axi_aclk );
-            
-            sel <= 1; 
-            foreach(stim.B[i])
+            s00_axis_tlast  <= 0;
+
+            repeat (2) @(posedge s00_axi_aclk);
+
+            sel <= 1;
+            foreach (stim.B[i])
                 send_word(stim.B[i], i == SIZE-1);
             s00_axis_tvalid <= 0;
-            s00_axis_tlast <= 0;
+            s00_axis_tlast  <= 0;
         endtask
 
-        // ---- Lab 3 step 4: start, collect the result, compare ----
+        // ---- Step 4: start, collect the result, compare ----
         task run_and_check();
             int n = 0;            // number of result words received
-            // TODO 4a: a ONE-cycle start pulse:   @(posedge clk); start <= 1;  @(posedge clk); start <= 0;
+
+            // one-cycle start pulse
             @(posedge s00_axi_aclk); start <= 1;
             @(posedge s00_axi_aclk); start <= 0;
-            // TODO 4b: receive loop. On every clock edge:
-            //   - if (m00_axis_tvalid && m00_axis_tready) -> store m00_axis_tdata in R_hw[n], n++,
-            //     and leave the loop if m00_axis_tlast was 1 on that word
-            //   - then choose the NEXT tready randomly (back-pressure, ~70 % ready):
-            //       m00_axis_tready <= ($urandom_range(0, 99) < 70);
-            //   Loop form:  forever begin @(posedge clk); ... if (...) break; end
-            
+
+            // Receive loop, one turn per clock edge. A word is received on an edge
+            // where tvalid && tready were both 1; the word with tlast is the last one.
+            // tready is chosen randomly every cycle (~70 % ready): this back-pressure
+            // makes the DUT wait sometimes, which the output assertions check.
             forever begin
                 @(posedge s00_axi_aclk);
                 if (m00_axis_tvalid && m00_axis_tready) begin
                     R_hw[n] = m00_axis_tdata;
-                    n = n + 1 ;
+                    n = n + 1;
                     if (m00_axis_tlast)
                         break;
-                 end
-                 m00_axis_tready <= ($urandom_range(0, 99) < 70);
-                
-            end     
-            // TODO 4c: after the loop: m00_axis_tready <= 0;
-            //   immediate assertion: exactly SIZE words arrived (else $error)
-            //   errors = stim.check(R_hw);   then print PASS / FAIL with $display
+                end
+                m00_axis_tready <= ($urandom_range(0, 99) < 70);
+            end
+
+            // stop receiving, check the word count (immediate assertion),
+            // then let Dipon's check() compare every element with R_expected
             m00_axis_tready <= 0;
             assert (n == SIZE) else $error("Expected %d elements got %d", SIZE, n);
             errors = stim.check(R_hw);
@@ -184,60 +168,43 @@ module tb_top;
     endclass
 
     // ------------------------------------------------------------------
-    // STEP 5: concurrent assertions on the OUTPUT AXI-Stream (Lab 3 task 4)
+    // Concurrent assertions on the OUTPUT AXI-Stream (Lab 3 task 4)
     // ------------------------------------------------------------------
-    // Lecture form (Verification II, slides 15-20):
-    //   property p_name;
-    //       @(posedge clk) disable iff (!s00_axi_aresetn)
-    //       <condition> |=> <what must hold one cycle later>;      // or |-> for the same cycle
-    //   endproperty
-    //   a_name: assert property (p_name) else $error("p_name failed at %0t", $time);
-    //
-    // TODO 5a: a word is held until it is accepted:     tvalid && !tready |=> tvalid
+    // Checked at every rising clock edge, switched off during reset.
+    //   |->  the right side must hold at the SAME edge
+    //   |=>  the right side must hold at the NEXT edge
+
+    // A word that is offered but not accepted stays offered.
     property p_hold;
-        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        @(posedge s00_axi_aclk) disable iff (!s00_axi_aresetn)
         m00_axis_tvalid && !m00_axis_tready |=> m00_axis_tvalid;
     endproperty
-    
     a_hold: assert property (p_hold) else $error("p_hold failed at %0t", $time);
-    
-    // TODO 5b: the word does not change while stalled:  tvalid && !tready |=> $stable(tdata) && $stable(tlast)
-   property p_stable;
-        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
-        m00_axis_tvalid && !m00_axis_tready |=> $stable(m00_axis_tdata) && $stable(m00_axis_tlast) ;
+
+    // While stalled, the offered word (data and tlast) does not change.
+    property p_stable;
+        @(posedge s00_axi_aclk) disable iff (!s00_axi_aresetn)
+        m00_axis_tvalid && !m00_axis_tready |=> $stable(m00_axis_tdata) && $stable(m00_axis_tlast);
     endproperty
-    
     a_stable: assert property (p_stable) else $error("p_stable failed at %0t", $time);
-    
-    
-    // TODO 5c: tlast only together with a valid word:   tlast |-> tvalid
+
+    // tlast only together with a valid word (the old Lab 2 output state broke this rule).
     property p_last;
-        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        @(posedge s00_axi_aclk) disable iff (!s00_axi_aresetn)
         m00_axis_tlast |-> m00_axis_tvalid;
     endproperty
-    
-     a_last: assert property (p_last) else $error("p_last failed at %0t", $time);
-    // TODO 5d: no unknown data on the bus:              tvalid |-> !$isunknown(tdata)
-    //   (all four use the m00_axis_* signals)
+    a_last: assert property (p_last) else $error("p_last failed at %0t", $time);
+
+    // A valid word never contains unknown (X/Z) bits.
     property p_nox;
-        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        @(posedge s00_axi_aclk) disable iff (!s00_axi_aresetn)
         m00_axis_tvalid |-> !$isunknown(m00_axis_tdata);
     endproperty
-    
-     a_nox: assert property (p_nox) else $error("p_nox failed at %0t", $time);
+    a_nox: assert property (p_nox) else $error("p_nox failed at %0t", $time);
 
     // ------------------------------------------------------------------
-    // STEP 6: FSM transition coverage (Lab 3 task 5)
+    // FSM coverage (Lab 3 task 5)
     // ------------------------------------------------------------------
-    // Lecture form (Verification II, slide 37):
-    //   covergroup cov_fsm @(posedge clk);
-    //       coverpoint dut.agu_inst.current_state {
-    //           bins idle_to_loadA = (S_IDLE => S_LOAD_A);
-    //           ...
-    //       }
-    //   endgroup
-    //   cov_fsm fsm_cov = new();
-    //
     // Sampled on every rising clock edge (white-box: we look inside the DUT at
     // dut.agu_inst.current_state). Three coverpoints answer the handout's questions:
     //   cp_state : is every state reached?                       (unreachable states?)
@@ -285,7 +252,7 @@ module tb_top;
 
     cov_fsm fsm_cov = new();
 
-    // ---- STEP 6b: how long is each state held? ------------------------------
+    // ---- How long is each state held? ----
     // The lecture writes this as a repetition bin, e.g. (S_CALC[*64] => S_WAIT),
     // but Vivado 2025.2 crashes on [*N] inside transition bins ("wrong state type
     // while Populating tbin" / kernel FATAL_ERROR - tested). So we measure it:
@@ -352,29 +319,28 @@ module tb_top;
         endcase
     endfunction
 
-
     // ------------------------------------------------------------------
-    // STEP 7: the test itself
+    // The test itself
     // ------------------------------------------------------------------
-    tb t;                                      // declare the handle here, create it below
+    tb t;                                      // handle declared here, object created below
 
     initial begin
-        // TODO 7a: start values for every input you drive (all 0; aresetn = 0 = reset active)
-        s00_axi_aresetn = 0;                         
-        s00_axis_tdata = 0;
-        s00_axis_tlast = 0;
+        // start values for every input the testbench drives; reset active (aresetn = 0)
+        s00_axi_aresetn = 0;
+        s00_axis_tdata  = 0;
+        s00_axis_tlast  = 0;
         s00_axis_tvalid = 0;
         m00_axis_tready = 0;
-        sel = 0;
-        start = 0;
-        // TODO 7b: hold reset for 2 clock edges, then release it (with <= after an edge)
+        sel             = 0;
+        start           = 0;
+
+        // hold reset for 2 clock edges, then release it
         repeat (2) @(posedge s00_axi_aclk);
-        s00_axi_aresetn <= 1 ;
+        s00_axi_aresetn <= 1;
         t = new();
 
-        // TODO 7c: run the four steps a few times in a row WITHOUT reset in between,
-        //   e.g. repeat (3) begin t.init(); t.compute(); t.send(); t.run_and_check(); end
-        //   (with randc, 3 runs = every mode once)
+        // three complete jobs back-to-back WITHOUT reset in between
+        // (randc: every constraint mode is used once)
         repeat (3) begin
             t.init();
             t.compute();
