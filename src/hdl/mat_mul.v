@@ -266,7 +266,8 @@ always @(*) begin
         
         S_3: if (row == DIM-1 && col == DIM-1 && temp == DIM-1) next_state = S_W;
         S_W: if (wait_counter == 2'd2) next_state = S_4; 
-        S_4: if (mem_counter == SIZE) next_state = S_0; 
+        // FIX 3: leave OUTPUT on the edge where the last word (with tlast) is accepted
+        S_4: if (m00_axis_tvalid && m00_axis_tready && m00_axis_tlast) next_state = S_0;
         default: next_state = S_0;
     endcase
 end
@@ -309,7 +310,7 @@ always @(posedge s00_axi_aclk) begin
             S_W: wait_counter <= wait_counter + 1;
             S_4: begin
                 if (m00_axis_tvalid && m00_axis_tready)
-                    mem_counter <= mem_counter + 1;
+                    mem_counter <= m00_axis_tlast ? 0 : mem_counter + 1;   // FIX 3
             end
         endcase
     end
@@ -347,12 +348,12 @@ always @(*) begin
             else addr_R = addr_R_pipe[1];
         end
         S_4: begin
-            m00_axis_tvalid = (mem_counter < SIZE); 
-            en_R = m00_axis_tready; 
-            rw_R = 1'b0; 
-            addr_R = mem_counter[SIZE_LOG-1:0] + 1; 
-            // Bypass the testbench loop glitch by firing tlast AFTER element 15 is read
-            if (mem_counter == SIZE) m00_axis_tlast = 1'b1; 
+            m00_axis_tvalid = 1'b1;                  // FIX 3: every cycle in OUTPUT carries a real word
+            en_R = m00_axis_tready;
+            rw_R = 1'b0;
+            addr_R = mem_counter[SIZE_LOG-1:0] + 1;
+            // FIX 3: AXI-Stream rule: tlast goes high TOGETHER with the last valid word
+            if (mem_counter == SIZE-1) m00_axis_tlast = 1'b1;
         end
     endcase
 end
