@@ -18,8 +18,7 @@ Matrix size: `localparam int DIM_LOG` at the top (2 = 4x4 for debugging, 6 = 64x
 
 ## Still to do
 - STEP 5 – concurrent assertions on the output AXI-Stream (Chanuka).
-- STEP 6 – FSM transition covergroup on `dut.agu_inst.current_state` + `xcrg` report (Dipu).
-  The skeleton comments for STEP 6 are already in `tb_top.sv`.
+- ~~STEP 6 – FSM coverage~~ **done (Dipu)** – see `README_fsm.md`; run it with `run_tb.tcl`.
 
 ## Vivado project setup (important)
 1. Add `src/hdl/mat_mul.v`, `lab3/stimulus.sv` and `lab3/tb_top.sv`; set `tb_top` as simulation top.
