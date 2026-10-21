@@ -194,11 +194,37 @@ module tb_top;
     //   a_name: assert property (p_name) else $error("p_name failed at %0t", $time);
     //
     // TODO 5a: a word is held until it is accepted:     tvalid && !tready |=> tvalid
+    property p_hold;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tvalid && !m00_axis_tready |=> m00_axis_tvalid;
+    endproperty
+    
+    a_hold: assert property (p_hold) else $error("p_hold failed at %0t", $time);
+    
     // TODO 5b: the word does not change while stalled:  tvalid && !tready |=> $stable(tdata) && $stable(tlast)
+   property p_stable;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tvalid && !m00_axis_tready |=> $stable(m00_axis_tdata) && $stable(m00_axis_tlast) ;
+    endproperty
+    
+    a_stable: assert property (p_stable) else $error("p_stable failed at %0t", $time);
+    
+    
     // TODO 5c: tlast only together with a valid word:   tlast |-> tvalid
+    property p_last;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tlast |-> m00_axis_tvalid;
+    endproperty
+    
+     a_last: assert property (p_last) else $error("p_last failed at %0t", $time);
     // TODO 5d: no unknown data on the bus:              tvalid |-> !$isunknown(tdata)
     //   (all four use the m00_axis_* signals)
-
+    property p_nox;
+        @(posedge s00_axi_aclk)  disable iff (!s00_axi_aresetn) 
+        m00_axis_tvalid |-> !$isunknown(m00_axis_tdata);
+    endproperty
+    
+     a_nox: assert property (p_nox) else $error("p_nox failed at %0t", $time);
 
     // ------------------------------------------------------------------
     // STEP 6: FSM transition coverage (Lab 3 task 5)
@@ -211,10 +237,120 @@ module tb_top;
     //       }
     //   endgroup
     //   cov_fsm fsm_cov = new();
-    // TODO 6: bins for every transition of the AGU:
-    //   IDLE->LOAD_A, LOAD_A->IDLE, IDLE->LOAD_B, LOAD_B->IDLE, IDLE->CALC, CALC->WAIT, WAIT->OUT, OUT->IDLE
-    //   + one bin for OUT held 3 or more cycles (happens with back-pressure):  (S_OUT [*3:$])
-    //   Report (Tcl console, after the run):  xcrg -report_format html -dir <path to xsim.covdb>
+    //
+    // Sampled on every rising clock edge (white-box: we look inside the DUT at
+    // dut.agu_inst.current_state). Three coverpoints answer the handout's questions:
+    //   cp_state : is every state reached?                       (unreachable states?)
+    //   cp_trans : is every legal transition taken?               (wrong transitions?)
+    //   cp_never : transitions that must never happen              (wrong transitions?)
+    //   + cov_hold below: how many cycles each state is held       (held long enough?)
+    // Report after the run:  xcrg -report_format html -dir <sim folder>/xsim.covdb
+    localparam int CALC_CYCLES = DIM*DIM*DIM;   // CALC: one cycle per (row, col, temp)
+    localparam int WAIT_CYCLES = 3;             // WAIT: 2-cycle BRAM+MAC pipeline drain + R[0] prefetch
+
+    covergroup cov_fsm @(posedge s00_axi_aclk);
+        // 1) every state visited
+        cp_state : coverpoint dut.agu_inst.current_state {
+            bins idle   = {S_IDLE};
+            bins load_a = {S_LOAD_A};
+            bins load_b = {S_LOAD_B};
+            bins calc   = {S_CALC};
+            bins wait_s = {S_WAIT};          // 'wait' is a keyword, so wait_s
+            bins out    = {S_OUT};
+        }
+        // 2) every legal transition of the AGU state diagram
+        cp_trans : coverpoint dut.agu_inst.current_state {
+            bins idle_to_loadA = (S_IDLE   => S_LOAD_A);
+            bins loadA_to_idle = (S_LOAD_A => S_IDLE);
+            bins idle_to_loadB = (S_IDLE   => S_LOAD_B);
+            bins loadB_to_idle = (S_LOAD_B => S_IDLE);
+            bins idle_to_calc  = (S_IDLE   => S_CALC);
+            bins calc_to_wait  = (S_CALC   => S_WAIT);
+            bins wait_to_out   = (S_WAIT   => S_OUT);
+            bins out_to_idle   = (S_OUT    => S_IDLE);
+        }
+        // 3) transitions that must NEVER happen. weight = 0: they do not count in the score,
+        //    but the report shows their hit count (must stay 0).
+        cp_never : coverpoint dut.agu_inst.current_state {
+            option.weight = 0;
+            bins loadA_to_calc = (S_LOAD_A => S_CALC);
+            bins loadA_to_loadB= (S_LOAD_A => S_LOAD_B);
+            bins calc_to_idle  = (S_CALC   => S_IDLE);
+            bins calc_to_out   = (S_CALC   => S_OUT);
+            bins wait_to_idle  = (S_WAIT   => S_IDLE);
+            bins out_to_calc   = (S_OUT    => S_CALC);
+            bins idle_to_out   = (S_IDLE   => S_OUT);
+        }
+    endgroup
+
+    cov_fsm fsm_cov = new();
+
+    // ---- STEP 6b: how long is each state held? ------------------------------
+    // The lecture writes this as a repetition bin, e.g. (S_CALC[*64] => S_WAIT),
+    // but Vivado 2025.2 crashes on [*N] inside transition bins ("wrong state type
+    // while Populating tbin" / kernel FATAL_ERROR - tested). So we measure it:
+    // count the cycles spent in the current state; when the state changes,
+    // sample cov_hold with that length and check it with immediate assertions.
+    logic [5:0]  fsm_prev  = '0;     // state during the previous cycle
+    int unsigned fsm_cnt   = 0;      // cycles spent in fsm_prev so far
+    logic [5:0]  left_state;         // the state that was just left
+    int unsigned left_len;           // ... and how many cycles it was held
+
+    covergroup cov_hold;             // sampled by hand when a state is left
+        cp_loadA : coverpoint left_len iff (left_state == S_LOAD_A) { bins exactly_SIZE = {SIZE}; }
+        cp_loadB : coverpoint left_len iff (left_state == S_LOAD_B) { bins exactly_SIZE = {SIZE}; }
+        cp_calc  : coverpoint left_len iff (left_state == S_CALC)   { bins exactly_DIM3 = {CALC_CYCLES}; }
+        cp_wait  : coverpoint left_len iff (left_state == S_WAIT)   { bins exactly_3    = {WAIT_CYCLES}; }
+        cp_out   : coverpoint left_len iff (left_state == S_OUT)    { bins stalled      = {[SIZE+1 : 100*SIZE]}; }
+    endgroup
+    cov_hold hold_cov = new();
+
+    always @(posedge s00_axi_aclk) begin
+        logic [5:0] cur;
+        if (s00_axi_aresetn) begin
+            cur = dut.agu_inst.current_state;    // read at the edge = state of the cycle that just ended
+            if (cur == fsm_prev)
+                fsm_cnt++;
+            else begin
+                if (fsm_cnt != 0) begin          // a state was left: record and check its length
+                    left_state = fsm_prev;
+                    left_len   = fsm_cnt;
+                    hold_cov.sample();
+                    case (left_state)
+                        S_LOAD_A, S_LOAD_B:
+                            assert (left_len >= SIZE)
+                                else $error("FSM: LOAD held %0d cycles, needs >= %0d (one per word)", left_len, SIZE);
+                        S_CALC:
+                            assert (left_len == CALC_CYCLES)
+                                else $error("FSM: CALC held %0d cycles, expected %0d (DIM^3)", left_len, CALC_CYCLES);
+                        S_WAIT:
+                            assert (left_len == WAIT_CYCLES)
+                                else $error("FSM: WAIT held %0d cycles, expected %0d", left_len, WAIT_CYCLES);
+                        S_OUT:
+                            assert (left_len >= SIZE)
+                                else $error("FSM: OUT held %0d cycles, needs >= %0d (one per word)", left_len, SIZE);
+                        default: ;
+                    endcase
+                    if (left_state != S_IDLE)
+                        $display("FSM: %-6s held %0d cycles", state_name(left_state), left_len);
+                end
+                fsm_prev = cur;
+                fsm_cnt  = 1;
+            end
+        end
+    end
+
+    function string state_name(logic [5:0] st);
+        case (st)
+            S_IDLE:   return "IDLE";
+            S_LOAD_A: return "LOAD_A";
+            S_LOAD_B: return "LOAD_B";
+            S_CALC:   return "CALC";
+            S_WAIT:   return "WAIT";
+            S_OUT:    return "OUT";
+            default:  return "??";
+        endcase
+    endfunction
 
 
     // ------------------------------------------------------------------
@@ -246,6 +382,8 @@ module tb_top;
             t.run_and_check();
         end
         $display("tb_top: all runs finished");
+        $display("FSM coverage (cov_fsm, states + transitions): %0.1f %%", fsm_cov.get_coverage());
+        $display("FSM coverage (cov_hold, cycles per state)   : %0.1f %%", hold_cov.get_coverage());
         $finish;
     end
 

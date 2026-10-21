@@ -16,3 +16,4 @@ __MACOSX/
 
 # Lab 3 stand-alone simulation output
 lab3/sim_run/
+lab3/tb_run/
