@@ -22,13 +22,13 @@ module tb_top;
     localparam int SIZE       = DIM*DIM;
     localparam int DATA_WIDTH = 32;
 
-    // AGU state codes (copied from mat_mul.v, module AGU), used by the FSM coverage
-    localparam logic [5:0] S_IDLE   = 6'b000001,
-                           S_LOAD_A = 6'b000010,
-                           S_LOAD_B = 6'b000100,
-                           S_CALC   = 6'b001000,
-                           S_WAIT   = 6'b010000,
-                           S_OUT    = 6'b100000;
+    // AGU state codes (copied from mat_mul.v, module AGU: the 5 states of the lab manual),
+    // used by the FSM coverage
+    localparam logic [4:0] S_IDLE   = 5'b00001,   // S_IDLE
+                           S_LOAD_A = 5'b00010,   // S_LOAD_A
+                           S_LOAD_B = 5'b00100,   // S_LOAD_B
+                           S_CALC   = 5'b01000,   // S_CALCULATE (includes the 3-cycle pipeline drain)
+                           S_OUT    = 5'b10000;   // S_OUTPUT
 
     // ------------------------------------------------------------------
     // Signals, clock and DUT
@@ -212,8 +212,8 @@ module tb_top;
     //   cp_never : transitions that must never happen              (wrong transitions?)
     //   + cov_hold below: how many cycles each state is held       (held long enough?)
     // Report after the run:  xcrg -report_format html -dir <sim folder>/xsim.covdb
-    localparam int CALC_CYCLES = DIM*DIM*DIM;   // CALC: one cycle per (row, col, temp)
-    localparam int WAIT_CYCLES = 3;             // WAIT: 2-cycle BRAM+MAC pipeline drain + R[0] prefetch
+    localparam int DRAIN_CYCLES = 3;                          // 2-cycle BRAM+MAC pipeline drain + R[0] prefetch
+    localparam int CALC_CYCLES  = DIM*DIM*DIM + DRAIN_CYCLES; // CALC: one cycle per (row, col, temp) + drain
 
     covergroup cov_fsm @(posedge s00_axi_aclk);
         // 1) every state visited
@@ -222,7 +222,6 @@ module tb_top;
             bins load_a = {S_LOAD_A};
             bins load_b = {S_LOAD_B};
             bins calc   = {S_CALC};
-            bins wait_s = {S_WAIT};          // 'wait' is a keyword, so wait_s
             bins out    = {S_OUT};
         }
         // 2) every legal transition of the AGU state diagram
@@ -232,8 +231,7 @@ module tb_top;
             bins idle_to_loadB = (S_IDLE   => S_LOAD_B);
             bins loadB_to_idle = (S_LOAD_B => S_IDLE);
             bins idle_to_calc  = (S_IDLE   => S_CALC);
-            bins calc_to_wait  = (S_CALC   => S_WAIT);
-            bins wait_to_out   = (S_WAIT   => S_OUT);
+            bins calc_to_out   = (S_CALC   => S_OUT);
             bins out_to_idle   = (S_OUT    => S_IDLE);
         }
         // 3) transitions that must NEVER happen. weight = 0: they do not count in the score,
@@ -243,8 +241,7 @@ module tb_top;
             bins loadA_to_calc = (S_LOAD_A => S_CALC);
             bins loadA_to_loadB= (S_LOAD_A => S_LOAD_B);
             bins calc_to_idle  = (S_CALC   => S_IDLE);
-            bins calc_to_out   = (S_CALC   => S_OUT);
-            bins wait_to_idle  = (S_WAIT   => S_IDLE);
+            bins loadB_to_calc = (S_LOAD_B => S_CALC);
             bins out_to_calc   = (S_OUT    => S_CALC);
             bins idle_to_out   = (S_IDLE   => S_OUT);
         }
@@ -253,27 +250,26 @@ module tb_top;
     cov_fsm fsm_cov = new();
 
     // ---- How long is each state held? ----
-    // The lecture writes this as a repetition bin, e.g. (S_CALC[*64] => S_WAIT),
+    // The lecture writes this as a repetition bin, e.g. (S_CALC[*67] => S_OUT),
     // but Vivado 2025.2 crashes on [*N] inside transition bins ("wrong state type
     // while Populating tbin" / kernel FATAL_ERROR - tested). So we measure it:
     // count the cycles spent in the current state; when the state changes,
     // sample cov_hold with that length and check it with immediate assertions.
-    logic [5:0]  fsm_prev  = '0;     // state during the previous cycle
+    logic [4:0]  fsm_prev  = '0;     // state during the previous cycle
     int unsigned fsm_cnt   = 0;      // cycles spent in fsm_prev so far
-    logic [5:0]  left_state;         // the state that was just left
+    logic [4:0]  left_state;         // the state that was just left
     int unsigned left_len;           // ... and how many cycles it was held
 
     covergroup cov_hold;             // sampled by hand when a state is left
         cp_loadA : coverpoint left_len iff (left_state == S_LOAD_A) { bins exactly_SIZE = {SIZE}; }
         cp_loadB : coverpoint left_len iff (left_state == S_LOAD_B) { bins exactly_SIZE = {SIZE}; }
-        cp_calc  : coverpoint left_len iff (left_state == S_CALC)   { bins exactly_DIM3 = {CALC_CYCLES}; }
-        cp_wait  : coverpoint left_len iff (left_state == S_WAIT)   { bins exactly_3    = {WAIT_CYCLES}; }
+        cp_calc  : coverpoint left_len iff (left_state == S_CALC)   { bins exactly_DIM3_plus_3 = {CALC_CYCLES}; }
         cp_out   : coverpoint left_len iff (left_state == S_OUT)    { bins stalled      = {[SIZE+1 : 100*SIZE]}; }
     endgroup
     cov_hold hold_cov = new();
 
     always @(posedge s00_axi_aclk) begin
-        logic [5:0] cur;
+        logic [4:0] cur;
         if (s00_axi_aresetn) begin
             cur = dut.agu_inst.current_state;    // read at the edge = state of the cycle that just ended
             if (cur == fsm_prev)
@@ -289,10 +285,7 @@ module tb_top;
                                 else $error("FSM: LOAD held %0d cycles, needs >= %0d (one per word)", left_len, SIZE);
                         S_CALC:
                             assert (left_len == CALC_CYCLES)
-                                else $error("FSM: CALC held %0d cycles, expected %0d (DIM^3)", left_len, CALC_CYCLES);
-                        S_WAIT:
-                            assert (left_len == WAIT_CYCLES)
-                                else $error("FSM: WAIT held %0d cycles, expected %0d", left_len, WAIT_CYCLES);
+                                else $error("FSM: CALC held %0d cycles, expected %0d (DIM^3 + 3 drain)", left_len, CALC_CYCLES);
                         S_OUT:
                             assert (left_len >= SIZE)
                                 else $error("FSM: OUT held %0d cycles, needs >= %0d (one per word)", left_len, SIZE);
@@ -307,13 +300,12 @@ module tb_top;
         end
     end
 
-    function string state_name(logic [5:0] st);
+    function string state_name(logic [4:0] st);
         case (st)
             S_IDLE:   return "IDLE";
             S_LOAD_A: return "LOAD_A";
             S_LOAD_B: return "LOAD_B";
             S_CALC:   return "CALC";
-            S_WAIT:   return "WAIT";
             S_OUT:    return "OUT";
             default:  return "??";
         endcase
