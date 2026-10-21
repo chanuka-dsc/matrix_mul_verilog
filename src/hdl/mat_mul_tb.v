@@ -10,7 +10,7 @@
 module mat_mul_tb # 
     (
         parameter integer DATA_WIDTH = 32,        
-        parameter integer MATRIX_DIMENSION_LOG_2 = 2 // for debug use a smaller size
+        parameter integer MATRIX_DIMENSION_LOG_2 = 1 // for debug use a smaller size
     )
     (
 
